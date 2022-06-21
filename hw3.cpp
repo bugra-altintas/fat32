@@ -7,11 +7,12 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <unistd.h>
+
+#define convert(value) ((0x000000ff & value) << 24) | ((0x0000ff00 & value) << 8) | \
+                       ((0x00ff0000 & value) >> 8) | ((0xff000000 & value) >> 24)
+
 using namespace std;
 
-void ls(vector<string>& args){
-    cout << "list directory" << endl;
-}
 
 void mkdir(vector<string>& args){
     cout << "make directory" << endl;
@@ -29,7 +30,7 @@ void cat(vector<string>& args){
     cout << "read directory" << endl;
 }
 
-string CurrentDirectory = "/> ";
+string CurrentDirectory = "/";
 uint32_t CurrentDirectoryFirstCluster; // root cluster at the beginning
 
 uint16_t BytesPerSector;       // Bytes per logical sector (It is always will be 512 in our case). Size: 2 bytes
@@ -43,6 +44,7 @@ uint32_t TotalSectors32;       // Total logical sectors including the hidden sec
 uint32_t FATSize;
 uint32_t FirstDataSector;
 uint32_t RootCluster;
+uint32_t EntriesPerCluster;
 int fd;
 
 size_t split(const string &txt, vector<string> &strs, char ch)
@@ -85,33 +87,54 @@ int parse(string command, vector<string>& args){
 }
 
 
+uint32_t getFatEntry(uint32_t clusterNum){
+    lseek(fd,ReservedSectorCount*BytesPerSector+clusterNum*4,SEEK_SET);
+    uint32_t entry;
+    read(fd,&entry,sizeof(entry));
+    return entry;
+}
 
 
 uint32_t FirstSectorofCluster(int N){
     return ((N - 2)*SectorsPerCluster) + FirstDataSector; 
 }
 
+uint8_t getSequence(FatFileLFN *lfn){
+    uint8_t seq = lfn->sequence_number;
+    seq = seq << 4;
+    seq = seq >> 4;
+    return seq;
+}
+
 void print(FatFileEntry *entry){
     if(entry->lfn.attributes == 15){
-        printf("Seq: %x\n",entry->lfn.sequence_number);
+        printf("Seq: %x\n",getSequence(&entry->lfn));
+        string name;
         for(int i=0;i<13;i++){
             if(i<5){
                 if(entry->lfn.name1[i] == 0)
                     break;
+                char a = (char) entry->lfn.name1[i];
+                //name.insert(0,&a );
                 cout << (char) entry->lfn.name1[i];
             }
             else if(i<11){
                 if(entry->lfn.name2[i-5] == 0)
                     break;
+                char a = (char) entry->lfn.name2[i-5];
+                //name.insert(0,&a );
                 cout << (char) entry->lfn.name2[i-5];
             }
             else{
                 if(entry->lfn.name3[i-11] == 0)
                     break;
+                char a = (char) entry->lfn.name3[i-11];
+                //name.insert(0,&a );
                 cout << (char) entry->lfn.name3[i-11];
             }
         }
         cout << endl;
+        //cout << name << endl;
     }
     else{
         if(entry->msdos.filename[0] == 0)
@@ -120,20 +143,239 @@ void print(FatFileEntry *entry){
     }
     
 }
-
-void cd(vector<string>& args){
-    //parse the path
-    vector<string> path;
-    split(args[1],path,'/');
-    //search the first cluster of current directory
-    lseek(fd,FirstSectorofCluster(CurrentDirectoryFirstCluster)*BytesPerSector,SEEK_SET);
-    
-    
-
-    //CurrentDirectory.insert(CurrentDirectory.size() -2, args[1] + '/');
+void getName(FatFileLFN* lfn, string* name){
+    for(int i=0;i<13;i++){
+        if(i<5){
+            if(lfn->name1[i] == 0)
+                break;
+            char a = (char) lfn->name1[i];
+            //name.insert(0,&a );
+            name->push_back(a);
+        }
+        else if(i<11){
+            if(lfn->name2[i-5] == 0)
+                break;
+            char a = (char) lfn->name2[i-5];
+            //name.insert(0,&a );
+            name->push_back(a);
+        }
+        else{
+            if(lfn->name3[i-11] == 0)
+                break;
+            char a = (char) lfn->name3[i-11];
+            //name.insert(0,&a );
+            name->push_back(a);
+        }
+    }   
 }
 
 
+bool cd(string& arg, bool update = true){
+    //parse the path
+    if(!arg.compare("/")){
+        if(update) CurrentDirectory = arg;
+        CurrentDirectoryFirstCluster = RootCluster;
+        return true;
+    }
+    else if(!arg.compare("."))
+        return true;
+    else if(!arg.compare("..")){// go back to parent dir
+        if(!CurrentDirectory.compare("/"))
+            return true;
+        vector<string> path;
+        split(CurrentDirectory,path,'/');
+        string parentPath = "/";
+        if(path[path.size()-2] == ""){
+            return cd(parentPath,update);
+        }
+        else{
+            path.pop_back();
+            path.erase(path.begin());
+            for(auto s:path){
+                parentPath += s;
+                parentPath += '/';
+            }
+            parentPath.pop_back();
+            cout << parentPath << endl;
+            return cd(parentPath,update);
+        }
+    }
+    vector<string> path;
+    split(arg,path,'/');
+    uint32_t workingCluster;
+    int relative = path[0].compare("");
+    if(relative){ // path[0] != ""
+        //relative
+        workingCluster = CurrentDirectoryFirstCluster;
+    }  
+    else{
+        //absolute
+        workingCluster = RootCluster;
+        path.erase(path.begin());
+    }
+    //go to the first cluster of current directory
+    lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+    int size = path.size();
+    bool found=false;
+    
+    for(int f=0;f<size;f++){ // relative searching
+        if(!path[f].compare("..")){
+            found = cd(path[f]);
+            path.erase(path.begin());
+            f--;
+            workingCluster = CurrentDirectoryFirstCluster;
+            continue;
+        }
+        if(found)
+            lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+        else if(f!=0)
+            break;
+        found = false;
+
+        while(!found){ // traversing the current cluster now
+            // look for a file
+            int e = 0; // represent how many entry is read in a cluster
+            vector<string> names;
+            FatFileEntry entry;
+            while(1){
+                if(e==32){
+                    e=0;
+                    uint32_t fatEntry = getFatEntry(workingCluster);
+                    // find next cluster from fatEntry, if there is, update; else, return;
+                    if(fatEntry >= 0xffffff8)
+                        return false;
+                    workingCluster = fatEntry;// update workingCluster
+                    lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+                }
+                e++;               
+                string name;
+                read(fd,&entry,sizeof(entry));
+                if(entry.lfn.attributes != 0x0F){
+                    if(entry.msdos.filename[0] == 0){
+                        return false;
+                    }
+                    else if(entry.msdos.filename[0] == 0x2E || 
+                        (entry.msdos.filename[0] == 0x2E && entry.msdos.filename[1] == 0x2E) ||
+                        entry.msdos.filename[0] == 0x05 ||
+                        entry.msdos.filename[0] == 0xE5){
+                            names.clear();
+                            continue;
+                        }
+                        
+                    string fullName;
+                    for(auto s:names){
+                        fullName += s;
+                    }
+                    //cout << fullName << endl;
+                    if(!fullName.compare(path[f]) && entry.msdos.attributes == 0x10){// folder found
+                        found = true;
+                        //cout << fullName << " is found!" << endl;
+                        if(f == size-1){
+                            if(update){
+                                if(relative){
+                                    //append to current one
+                                    if(!CurrentDirectory.compare("/")){
+                                        for(auto s:path){
+                                            CurrentDirectory+=s;
+                                            CurrentDirectory+='/';
+                                        }
+                                        CurrentDirectory.pop_back();    
+                                        //CurrentDirectory.insert(CurrentDirectory.size(), path[f]);
+                                    }
+                                    else
+                                        CurrentDirectory.insert(CurrentDirectory.size(), '/'+path[f]);
+                                }
+                                else{
+                                    //replace with current one
+                                    CurrentDirectory = arg;
+                                }                                
+                            }
+                            CurrentDirectoryFirstCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                        }
+                        else
+                            workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                        break;
+                    }
+                    else{// check the other files
+                        names.clear();
+                        continue;
+                    }
+                }
+                else{
+                    getName(&entry.lfn,&name);
+                    names.insert(names.begin(),name);
+                }
+
+            }
+        }
+
+    }
+    //CurrentDirectory.insert(CurrentDirectory.size() -2, args[1] + '/');
+    return found;
+}
+
+void ls(){
+    uint32_t workingCluster = CurrentDirectoryFirstCluster;
+    lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+    vector<string> names;
+    int e = 0;
+    bool empty = false;
+    while(1){
+        if(e==32){
+            e = 0;
+            uint32_t fatEntry = getFatEntry(workingCluster);
+            // find next cluster, if there is, update; else return;
+            if(fatEntry >= 0xffffff8)
+                return;
+            workingCluster = fatEntry;// update workingCluster
+            lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+        }
+        e++;
+        FatFileEntry entry;
+        read(fd,&entry,sizeof(entry));
+        if(entry.lfn.attributes == 0){
+            if(e==1 || e == 3) empty = true;
+            break;
+        }
+        else if(entry.lfn.attributes != 0x0F){
+            if(entry.msdos.filename[0] == 0x2E || 
+                (entry.msdos.filename[0] == 0x2E && entry.msdos.filename[1] == 0x2E) ||
+                entry.msdos.filename[0] == 0x05 ||
+                entry.msdos.filename[0] == 0xE5){
+                    names.clear();
+                    continue;
+                }
+                
+            string fullName;
+            for(auto s:names){
+                fullName += s;
+            }
+            if(names.size()) cout << fullName << " ";
+            names.clear();            
+        }
+        else{
+            string name;
+            getName(&entry.lfn,&name);
+            names.insert(names.begin(),name);
+        }
+    }
+    if(!empty) cout << endl;
+}
+
+
+void ls(string& arg){
+    //cout << "arg: " << arg << endl;
+    vector<string> path;
+    split(arg,path,'/');
+    lseek(fd,FirstSectorofCluster(CurrentDirectoryFirstCluster)*BytesPerSector,SEEK_SET);
+    string backupCurrentDirectory = CurrentDirectory.substr(0,CurrentDirectory.size());
+    //cout << "backup: " << backupCurrentDirectory << endl;
+    if(cd(arg,false)){
+        ls();
+        cd(backupCurrentDirectory,false);
+    };
+
+}
 
 
 int main(){
@@ -142,7 +384,7 @@ int main(){
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    fd = open("../../../example.img",O_RDONLY);
+    fd = open("../../example.img",O_RDONLY);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
@@ -151,40 +393,17 @@ int main(){
     memcpy(&bpb,img,sizeof(BPB_struct));
 
     ReservedSectorCount = bpb.ReservedSectorCount;
+    SectorsPerCluster = bpb.SectorsPerCluster;
     BytesPerSector = bpb.BytesPerSector;
-    cout << BytesPerSector << endl;
-    cout << "FAT Tables starts at byte offset " << ReservedSectorCount*BytesPerSector << endl; 
-
     NumFATs = bpb.NumFATs;
     FATSize = bpb.extended.FATSize;
-
-    //void *fat_address = mmap(NULL,NumFATs*FATSize,PROT_READ | PROT_WRITE,MAP_SHARED,fd,ReservedSectorCount*BytesPerSector);
-    //cout << *(fat_address) << endl;
-    cout << "Data region starts at byte offset " << ReservedSectorCount*BytesPerSector + (NumFATs*FATSize)*BytesPerSector << endl;
-
     RootCluster = bpb.extended.RootCluster;
-    cout << "Root cluster: " << RootCluster << endl;
-
     FirstDataSector = bpb.ReservedSectorCount + (NumFATs*FATSize);
-    cout << "FirstDataSector: " << FirstDataSector << endl;
-
-    uint32_t firstsofc = FirstSectorofCluster(RootCluster); 
-    cout << "First Sector of Root Cluster: " << firstsofc << endl; 
-    FatFileEntry file;
-
-    //cout << FAT_getFatEntry(fd,RootCluster)<< endl;
-
-
-
-    lseek(fd,ReservedSectorCount*BytesPerSector + (NumFATs*FATSize)*BytesPerSector,SEEK_SET);
-    while(0){
-        FatFileEntry entry2;
-        read(fd,&entry2,sizeof(entry2));
-        //print(&entry2);
-    }
+    EntriesPerCluster = SectorsPerCluster*BytesPerSector/sizeof(FatFileEntry);
     CurrentDirectoryFirstCluster = RootCluster;
+
     while(1){
-        cout << CurrentDirectory;
+        cout << CurrentDirectory + "> ";
         getline(cin,command);
         if(command.compare("quit") == 0){
             break;
@@ -194,10 +413,13 @@ int main(){
         switch (c)
         {
         case 1: // cd
-            cd(args);
+            cd(args[1]);
             break;
         case 2: // ls
-            ls(args);
+            if(args.size() == 1)
+                ls();
+            else if(args.size() == 2)
+                ls(args[1]);
             break;
         case 3: // mkdir
             mkdir(args);
