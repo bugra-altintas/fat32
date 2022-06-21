@@ -9,10 +9,6 @@
 #include <unistd.h>
 using namespace std;
 
-void cd(vector<string>& args){
-    //CurrentDirectory.insert(CurrentDirectory.size() -2, args[1] + '/');
-}
-
 void ls(vector<string>& args){
     cout << "list directory" << endl;
 }
@@ -34,6 +30,8 @@ void cat(vector<string>& args){
 }
 
 string CurrentDirectory = "/> ";
+uint32_t CurrentDirectoryFirstCluster; // root cluster at the beginning
+
 uint16_t BytesPerSector;       // Bytes per logical sector (It is always will be 512 in our case). Size: 2 bytes
 uint8_t SectorsPerCluster;     // Logical sectors per cluster in the order of two. Size: 1 byte
 uint16_t ReservedSectorCount;  // Count of reserved logical sectors. Size: 2 bytes
@@ -45,6 +43,7 @@ uint32_t TotalSectors32;       // Total logical sectors including the hidden sec
 uint32_t FATSize;
 uint32_t FirstDataSector;
 uint32_t RootCluster;
+int fd;
 
 size_t split(const string &txt, vector<string> &strs, char ch)
 {
@@ -85,31 +84,55 @@ int parse(string command, vector<string>& args){
         return 0;
 }
 
+
+
+
 uint32_t FirstSectorofCluster(int N){
     return ((N - 2)*SectorsPerCluster) + FirstDataSector; 
 }
 
-uint32_t getFatAddressByCluster(uint32_t clusterNum) {
-    uint32_t FATOffset = clusterNum * 4;
-    uint32_t ThisFATSecNum = ReservedSectorCount + (FATOffset / BytesPerSector);
-    uint32_t ThisFATEntOffset = FATOffset % BytesPerSector;
-    return (ThisFATSecNum * BytesPerSector+ ThisFATEntOffset); 
-}
-uint32_t FAT_getFatEntry(int fd, uint32_t clusterNum) {
-    
-    uint8_t aFatEntry[4];
-    uint32_t FATOffset = clusterNum * 4;
-    lseek(fd,getFatAddressByCluster(clusterNum)+4,SEEK_SET);
-    read(fd,aFatEntry,4);
-    uint32_t fatEntry = 0x00000000;
-
-    int x;
-    for(x = 0; x < 4; x++) {
-        fatEntry |= aFatEntry[(FATOffset % 4 ) + x] << 8 * x;
+void print(FatFileEntry *entry){
+    if(entry->lfn.attributes == 15){
+        printf("Seq: %x\n",entry->lfn.sequence_number);
+        for(int i=0;i<13;i++){
+            if(i<5){
+                if(entry->lfn.name1[i] == 0)
+                    break;
+                cout << (char) entry->lfn.name1[i];
+            }
+            else if(i<11){
+                if(entry->lfn.name2[i-5] == 0)
+                    break;
+                cout << (char) entry->lfn.name2[i-5];
+            }
+            else{
+                if(entry->lfn.name3[i-11] == 0)
+                    break;
+                cout << (char) entry->lfn.name3[i-11];
+            }
+        }
+        cout << endl;
     }
-
-    return fatEntry;
+    else{
+        if(entry->msdos.filename[0] == 0)
+            return;
+        printf("%x\n",entry->msdos.filename[0]);
+    }
+    
 }
+
+void cd(vector<string>& args){
+    //parse the path
+    vector<string> path;
+    split(args[1],path,'/');
+    //search the first cluster of current directory
+    lseek(fd,FirstSectorofCluster(CurrentDirectoryFirstCluster)*BytesPerSector,SEEK_SET);
+    
+    
+
+    //CurrentDirectory.insert(CurrentDirectory.size() -2, args[1] + '/');
+}
+
 
 
 
@@ -119,7 +142,7 @@ int main(){
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    int fd = open("../../../example.img",O_RDONLY);
+    fd = open("../../../example.img",O_RDONLY);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
@@ -149,50 +172,18 @@ int main(){
     cout << "First Sector of Root Cluster: " << firstsofc << endl; 
     FatFileEntry file;
 
-    cout << FAT_getFatEntry(fd,RootCluster)<< endl;
+    //cout << FAT_getFatEntry(fd,RootCluster)<< endl;
 
 
-/*
-    lseek(fd,ReservedSectorCount*BytesPerSector,SEEK_SET);
-    char buf[4];
-    uint32_t x;
-    read(fd,&x,4);
-    cout << x << endl;
-    //lseek(fd,4,SEEK_CUR);
-    read(fd,&x,4);
-    cout << x << endl;
-    //lseek(fd,4,SEEK_CUR);
-    read(fd,&x,4);
-    cout << x << endl;
-        //lseek(fd,4,SEEK_CUR);
-    read(fd,&x,4);
-    cout << x << endl;
-        //lseek(fd,4,SEEK_CUR);
-    read(fd,&x,4);
-    cout << x << endl;
-        //lseek(fd,4,SEEK_CUR);
-    read(fd,&x,4);
-    cout << x << endl;
-       read(fd,&x,4);
-    cout << x << endl;
-       read(fd,&x,4);
-    cout << x << endl;*/
-    close(fd);
-    /*
-    SectorsPerCluster = bpb.SectorsPerCluster;
-    
-    void* data_region = mmap(NULL,SectorsPerCluster*BytesPerSector,PROT_READ,MAP_SHARED,fd,829440 );
-    if(data_region==MAP_FAILED) cout << "data map failed" << endl;
-    FatFile83 fatfile;
 
-    memcpy(&fatfile,data_region,sizeof(FatFile83));
-    
-    //
-
-    uint8_t* filename = fatfile.filename;
-*/
-    
+    lseek(fd,ReservedSectorCount*BytesPerSector + (NumFATs*FATSize)*BytesPerSector,SEEK_SET);
     while(0){
+        FatFileEntry entry2;
+        read(fd,&entry2,sizeof(entry2));
+        //print(&entry2);
+    }
+    CurrentDirectoryFirstCluster = RootCluster;
+    while(1){
         cout << CurrentDirectory;
         getline(cin,command);
         if(command.compare("quit") == 0){
@@ -222,5 +213,6 @@ int main(){
             break;
         }
     }
+    close(fd);
     return 0;
 }
