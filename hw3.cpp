@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctime>
 
 #define convert(value) ((0x000000ff & value) << 24) | ((0x0000ff00 & value) << 8) | \
                        ((0x00ff0000 & value) >> 8) | ((0xff000000 & value) >> 24)
@@ -196,7 +197,7 @@ bool cd(string& arg, bool update = true){
                 parentPath += '/';
             }
             parentPath.pop_back();
-            cout << parentPath << endl;
+            //cout << parentPath << endl;
             return cd(parentPath,update);
         }
     }
@@ -221,9 +222,11 @@ bool cd(string& arg, bool update = true){
     for(int f=0;f<size;f++){ // relative searching
         if(!path[f].compare("..")){
             found = cd(path[f]);
-            path.erase(path.begin());
-            f--;
             workingCluster = CurrentDirectoryFirstCluster;
+            continue;
+        }
+        else if(!path[f].compare(".")){
+            found = true;
             continue;
         }
         if(found)
@@ -238,7 +241,7 @@ bool cd(string& arg, bool update = true){
             vector<string> names;
             FatFileEntry entry;
             while(1){
-                if(e==32){
+                if(e==EntriesPerCluster){
                     e=0;
                     uint32_t fatEntry = getFatEntry(workingCluster);
                     // find next cluster from fatEntry, if there is, update; else, return;
@@ -276,6 +279,8 @@ bool cd(string& arg, bool update = true){
                                     //append to current one
                                     if(!CurrentDirectory.compare("/")){
                                         for(auto s:path){
+                                            if(!s.compare(".."))
+                                                continue;
                                             CurrentDirectory+=s;
                                             CurrentDirectory+='/';
                                         }
@@ -314,14 +319,14 @@ bool cd(string& arg, bool update = true){
     return found;
 }
 
-void ls(){
+void ls(bool detail = false){
     uint32_t workingCluster = CurrentDirectoryFirstCluster;
     lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
     vector<string> names;
     int e = 0;
     bool empty = false;
     while(1){
-        if(e==32){
+        if(e==EntriesPerCluster){
             e = 0;
             uint32_t fatEntry = getFatEntry(workingCluster);
             // find next cluster, if there is, update; else return;
@@ -344,14 +349,56 @@ void ls(){
                 entry.msdos.filename[0] == 0xE5){
                     names.clear();
                     continue;
-                }
+            }
+            
                 
             string fullName;
             for(auto s:names){
                 fullName += s;
             }
-            if(names.size()) cout << fullName << " ";
-            names.clear();            
+            if(!detail){
+                if(names.size()) cout << fullName << " ";
+                names.clear(); 
+            }
+            else{ // ls -l
+                // may be one more cond here like if(names.size())???
+                if(entry.msdos.attributes == 0x10){
+                    cout << "rwx------ 1 root root ";
+                    cout << entry.msdos.fileSize << " ";
+                    time_t date = (time_t) entry.msdos.modifiedDate; 
+                    tm *datetm = localtime(&date);
+                    char datestr[30];
+                    strftime(datestr,30,"%b %d",datetm);
+
+                    time_t time = (time_t) entry.msdos.modifiedTime; 
+                    tm *timetm = localtime(&time);
+                    char timestr[30];
+                    strftime(timestr,30,"%R",timetm);                    
+
+                    cout << datestr << " ";
+                    cout << timestr << " ";
+                    // <file_size_in_bytes> <last_modified_date_and_time> <filename> 
+                }
+                else if(entry.msdos.attributes == 0x20){
+                    cout << "drwx------ 1 root root 0 ";
+                    time_t date = (time_t) entry.msdos.modifiedDate; 
+                    tm *datetm = localtime(&date);
+                    char datestr[30];
+                    strftime(datestr,30,"%b %d",datetm);
+
+                    time_t time = (time_t) entry.msdos.modifiedTime; 
+                    tm *timetm = localtime(&time);
+                    char timestr[30];
+                    strftime(timestr,30,"%R",timetm);                    
+
+                    cout << datestr << " ";
+                    cout << timestr << " ";
+                    // <last_modified_date_and_time>
+                }
+                if(names.size()) cout << fullName << endl;
+                names.clear();                     
+            }
+        
         }
         else{
             string name;
@@ -359,11 +406,13 @@ void ls(){
             names.insert(names.begin(),name);
         }
     }
-    if(!empty) cout << endl;
+    if(!empty && !detail) cout << endl;
+    
+
 }
 
 
-void ls(string& arg){
+void ls(string& arg,bool detail = false){
     //cout << "arg: " << arg << endl;
     vector<string> path;
     split(arg,path,'/');
@@ -371,7 +420,7 @@ void ls(string& arg){
     string backupCurrentDirectory = CurrentDirectory.substr(0,CurrentDirectory.size());
     //cout << "backup: " << backupCurrentDirectory << endl;
     if(cd(arg,false)){
-        ls();
+        ls(detail);
         cd(backupCurrentDirectory,false);
     };
 
@@ -418,8 +467,15 @@ int main(){
         case 2: // ls
             if(args.size() == 1)
                 ls();
-            else if(args.size() == 2)
-                ls(args[1]);
+            else if(args.size() == 2){
+                if(!args[1].compare("-l"))
+                    ls(true);
+                else
+                    ls(args[1]);
+            }
+            else if(args.size() == 3){
+                ls(args[2],true);
+            }
             break;
         case 3: // mkdir
             mkdir(args);
