@@ -1,3 +1,5 @@
+
+
 #include "fat32.h"
 #include <iostream>
 #include <string>
@@ -33,7 +35,7 @@ void cat(vector<string>& args){
 
 string CurrentDirectory = "/";
 uint32_t CurrentDirectoryFirstCluster; // root cluster at the beginning
-
+uint32_t ParentDirectoryFirstCluster;
 uint16_t BytesPerSector;       // Bytes per logical sector (It is always will be 512 in our case). Size: 2 bytes
 uint8_t SectorsPerCluster;     // Logical sectors per cluster in the order of two. Size: 1 byte
 uint16_t ReservedSectorCount;  // Count of reserved logical sectors. Size: 2 bytes
@@ -170,6 +172,68 @@ void getName(FatFileLFN* lfn, string* name){
     }   
 }
 
+void updatePrompt(string& arg){
+    CurrentDirectory = arg;
+}
+void updatePrompt(vector<string>& path){
+    if(!CurrentDirectory.compare("/")){
+        for(auto s:path){
+            if(!s.compare(".."))
+                continue;
+            CurrentDirectory+=s;
+            CurrentDirectory+='/';
+        }
+        CurrentDirectory.pop_back();    
+        //CurrentDirectory.insert(CurrentDirectory.size(), path[f]);
+    }
+    else{
+        for(auto s:path){
+            if(!s.compare("..")){
+                for(int c = CurrentDirectory.size()-1;c>=0;c--){
+                    if(CurrentDirectory[c] == '/'){
+                        if(CurrentDirectory.size() > 1) 
+                            CurrentDirectory.pop_back();
+                        break;
+                    }
+                    CurrentDirectory.pop_back();
+                }
+                continue;
+            }
+            else
+                CurrentDirectory += ('/' + s);
+        }
+            //CurrentDirectory.insert(CurrentDirectory.size(), '/'+path[f]);
+    }
+        
+}
+
+bool locate(string& arg, uint32_t* firstCluster, uint32_t* parentFirstCluster){
+    vector<string> path;
+    split(arg,path,'/');
+    uint32_t workingCluster = CurrentDirectoryFirstCluster;
+    uint32_t parentCluster = ParentDirectoryFirstCluster;
+    int relative = path[0].compare(""); //|| !path[0].compare(".");
+    if(relative){
+        //absolute
+        workingCluster = RootCluster;
+        path.erase(path.begin());
+    }
+    int size = path.size();
+    for(int f = 0;f<size;f++){
+        if(!path[f].compare(".")){
+            continue;
+        }
+        else if(!path[f].compare("..")){
+            workingCluster = parentCluster;
+        }
+    }
+
+
+
+
+
+
+}
 
 bool cd(string& arg, bool update = true){
     //parse the path
@@ -204,6 +268,7 @@ bool cd(string& arg, bool update = true){
     vector<string> path;
     split(arg,path,'/');
     uint32_t workingCluster;
+    uint32_t parentCluster;
     int relative = path[0].compare("");
     if(relative){ // path[0] != ""
         //relative
@@ -433,7 +498,7 @@ int main(){
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    fd = open("../../example.img",O_RDONLY);
+    fd = open("../../../example.img",O_RDONLY);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
