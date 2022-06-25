@@ -16,14 +16,9 @@
 
 using namespace std;
 
-
-void mkdir(vector<string>& args){
-    cout << "make directory" << endl;
-}
-
-void touch(vector<string>& args){
-    cout << "create directory" << endl;
-}
+typedef struct Cluster{
+    vector<FatFileEntry> entries;
+} Cluster;
 
 void mv(vector<string>& args){
     cout << "move directory" << endl;
@@ -199,40 +194,19 @@ void updatePrompt(vector<string>& path){
                 }
                 continue;
             }
-            else
-                CurrentDirectory += ('/' + s);
+            else if(!s.compare("."))
+                continue;
+            else{
+                if(CurrentDirectory.size() == 1)
+                    CurrentDirectory+=s;
+                else
+                    CurrentDirectory += ('/' + s);
+            }
+                
         }
             //CurrentDirectory.insert(CurrentDirectory.size(), '/'+path[f]);
     }
         
-}
-
-bool locate(string& arg, uint32_t* firstCluster, uint32_t* parentFirstCluster){
-    vector<string> path;
-    split(arg,path,'/');
-    uint32_t workingCluster = CurrentDirectoryFirstCluster;
-    uint32_t parentCluster = ParentDirectoryFirstCluster;
-    int relative = path[0].compare(""); //|| !path[0].compare(".");
-    if(relative){
-        //absolute
-        workingCluster = RootCluster;
-        path.erase(path.begin());
-    }
-    int size = path.size();
-    for(int f = 0;f<size;f++){
-        if(!path[f].compare(".")){
-            continue;
-        }
-        else if(!path[f].compare("..")){
-            workingCluster = parentCluster;
-        }
-    }
-
-
-
-
-
-
 }
 
 bool cd(string& arg, bool update = true){
@@ -242,33 +216,9 @@ bool cd(string& arg, bool update = true){
         CurrentDirectoryFirstCluster = RootCluster;
         return true;
     }
-    else if(!arg.compare("."))
-        return true;
-    else if(!arg.compare("..")){// go back to parent dir
-        if(!CurrentDirectory.compare("/"))
-            return true;
-        vector<string> path;
-        split(CurrentDirectory,path,'/');
-        string parentPath = "/";
-        if(path[path.size()-2] == ""){
-            return cd(parentPath,update);
-        }
-        else{
-            path.pop_back();
-            path.erase(path.begin());
-            for(auto s:path){
-                parentPath += s;
-                parentPath += '/';
-            }
-            parentPath.pop_back();
-            //cout << parentPath << endl;
-            return cd(parentPath,update);
-        }
-    }
     vector<string> path;
     split(arg,path,'/');
     uint32_t workingCluster;
-    uint32_t parentCluster;
     int relative = path[0].compare("");
     if(relative){ // path[0] != ""
         //relative
@@ -283,15 +233,29 @@ bool cd(string& arg, bool update = true){
     lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
     int size = path.size();
     bool found=false;
-    
-    for(int f=0;f<size;f++){ // relative searching
+    bool folderFound;
+    for(int f=0;f<size;f++){
+        folderFound = false;
         if(!path[f].compare("..")){
-            found = cd(path[f]);
-            workingCluster = CurrentDirectoryFirstCluster;
-            continue;
+            if(workingCluster == RootCluster){
+                return false;
+            }
+            else{
+                lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+                FatFileEntry firstEntry,secondEntry;
+                read(fd,&firstEntry,sizeof(FatFileEntry));
+                read(fd,&secondEntry,sizeof(FatFileEntry));
+                workingCluster = secondEntry.msdos.eaIndex | secondEntry.msdos.firstCluster;
+                if(workingCluster == 0)
+                    workingCluster = RootCluster;
+                found = true;
+                folderFound = true;
+                continue;
+            }
         }
         else if(!path[f].compare(".")){
             found = true;
+            folderFound = true;
             continue;
         }
         if(found)
@@ -299,7 +263,6 @@ bool cd(string& arg, bool update = true){
         else if(f!=0)
             break;
         found = false;
-
         while(!found){ // traversing the current cluster now
             // look for a file
             int e = 0; // represent how many entry is read in a cluster
@@ -339,28 +302,8 @@ bool cd(string& arg, bool update = true){
                         found = true;
                         //cout << fullName << " is found!" << endl;
                         if(f == size-1){
-                            if(update){
-                                if(relative){
-                                    //append to current one
-                                    if(!CurrentDirectory.compare("/")){
-                                        for(auto s:path){
-                                            if(!s.compare(".."))
-                                                continue;
-                                            CurrentDirectory+=s;
-                                            CurrentDirectory+='/';
-                                        }
-                                        CurrentDirectory.pop_back();    
-                                        //CurrentDirectory.insert(CurrentDirectory.size(), path[f]);
-                                    }
-                                    else
-                                        CurrentDirectory.insert(CurrentDirectory.size(), '/'+path[f]);
-                                }
-                                else{
-                                    //replace with current one
-                                    CurrentDirectory = arg;
-                                }                                
-                            }
-                            CurrentDirectoryFirstCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                            folderFound = true;
+                            workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
                         }
                         else
                             workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
@@ -380,8 +323,19 @@ bool cd(string& arg, bool update = true){
         }
 
     }
+    if(folderFound){
+        if(update){
+            if(relative)
+                updatePrompt(path);
+            else
+                updatePrompt(arg);                          
+        }
+        CurrentDirectoryFirstCluster = workingCluster;
+    }
+
+    
     //CurrentDirectory.insert(CurrentDirectory.size() -2, args[1] + '/');
-    return found;
+    return folderFound;
 }
 
 void ls(bool detail = false){
@@ -476,13 +430,12 @@ void ls(bool detail = false){
 
 }
 
-
 void ls(string& arg,bool detail = false){
     //cout << "arg: " << arg << endl;
     vector<string> path;
     split(arg,path,'/');
     lseek(fd,FirstSectorofCluster(CurrentDirectoryFirstCluster)*BytesPerSector,SEEK_SET);
-    string backupCurrentDirectory = CurrentDirectory.substr(0,CurrentDirectory.size());
+    string backupCurrentDirectory = CurrentDirectory;
     //cout << "backup: " << backupCurrentDirectory << endl;
     if(cd(arg,false)){
         ls(detail);
@@ -492,13 +445,55 @@ void ls(string& arg,bool detail = false){
 }
 
 
+
+void mkdir(string& arg){
+    vector<string> path;
+    split(arg,path,'/');
+    string newFolder = path.back();
+    path.pop_back();
+    string backupCurrDir = CurrentDirectory;
+    string parentPath;
+    uint32_t workingCluster;
+    // construct parentPath
+
+    if(cd(parentPath,false)){
+        workingCluster = CurrentDirectoryFirstCluster;
+
+
+        // create folder here
+
+        cd(backupCurrDir,false);
+    }
+}
+
+
+void touch(string& arg){
+    vector<string> path;
+    split(arg,path,'/');
+    string newFolder = path.back();
+    path.pop_back();
+    string backupCurrDir = CurrentDirectory;
+    string parentPath;
+    uint32_t workingCluster;
+    // construct parentPath
+
+    if(cd(parentPath,false)){
+        workingCluster = CurrentDirectoryFirstCluster;
+
+
+        // create folder here
+
+        cd(backupCurrDir,false);
+    }
+}
+
 int main(){
     string command;
     BPB_struct bpb;
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    fd = open("../../../example.img",O_RDONLY);
+    fd = open("../../example.img",O_RDONLY);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
@@ -543,10 +538,10 @@ int main(){
             }
             break;
         case 3: // mkdir
-            mkdir(args);
+            mkdir(args[1]);
             break;
         case 4: // touch
-            touch(args);
+            touch(args[1]);
             break;
         case 5: // mv
             mv(args);
