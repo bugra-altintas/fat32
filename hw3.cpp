@@ -92,6 +92,9 @@ uint32_t getFatEntry(uint32_t clusterNum){
     return entry;
 }
 
+void retrieveCluster(uint32_t workingCluster){
+    lseek(fd,FirstSectorofCluster(workingCluster)*BytesPerSector,SEEK_SET);
+}
 
 uint32_t FirstSectorofCluster(int N){
     return ((N - 2)*SectorsPerCluster) + FirstDataSector; 
@@ -209,7 +212,7 @@ void updatePrompt(vector<string>& path){
         
 }
 
-bool cd(string& arg, bool update = true){
+bool cd(string& arg, bool update = true, uint8_t* attrCat = NULL){
     //parse the path
     if(!arg.compare("/")){
         if(update) CurrentDirectory = arg;
@@ -298,16 +301,22 @@ bool cd(string& arg, bool update = true){
                         fullName += s;
                     }
                     //cout << fullName << endl;
-                    if(!fullName.compare(path[f]) && entry.msdos.attributes == 0x10){// folder found
-                        found = true;
-                        //cout << fullName << " is found!" << endl;
-                        if(f == size-1){
-                            folderFound = true;
-                            workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                    if(!fullName.compare(path[f])){// folder found
+                        if(entry.msdos.attributes == 0x10){
+                            found = true;
+                            //cout << fullName << " is found!" << endl;
+                            if(f == size-1){
+                                folderFound = true;
+                                workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                            }
+                            else
+                                workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                            break;
                         }
-                        else
-                            workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
-                        break;
+                        else if(entry.msdos.attributes == 0x20){
+                            if(attrCat)
+                                *attrCat = 
+                        }
                     }
                     else{// check the other files
                         names.clear();
@@ -446,45 +455,57 @@ void ls(string& arg,bool detail = false){
 
 
 
-void mkdir(string& arg){
+// path->>> folder1/folder2/folder3 case1
+// path->>> /home/pictures/folde2 case2
+
+void mkdir(string& arg, bool folder = true){
+    // folder = true ---->>> mkdir
+    // folder = false ---->>>> touch
     vector<string> path;
     split(arg,path,'/');
-    string newFolder = path.back();
-    path.pop_back();
-    string backupCurrDir = CurrentDirectory;
+    string newFolder;
     string parentPath;
+    // construct parent path in parentPath
+    if(!path[0].compare("")){ //case2
+        // absolute
+        newFolder = path.back();
+        path.pop_back();
+        for(auto s:path){
+            if(!s.compare(""))
+                parentPath+='/';
+            else
+                parentPath+=s;
+        }
+    }
+    else{ //case1
+        newFolder = path.back();
+        path.pop_back();
+        if(CurrentDirectory.size() == 1)
+            parentPath=CurrentDirectory;
+        else
+            parentPath = CurrentDirectory+ '/';
+        for(auto s:path)
+            parentPath+=s;
+    }
+
+    string backupCurrDir = CurrentDirectory;
     uint32_t workingCluster;
-    // construct parentPath
+    
+    //create lfns and msdos here in a vector
+    vector<FatFileEntry> newFolderEntries;
 
     if(cd(parentPath,false)){
         workingCluster = CurrentDirectoryFirstCluster;
-
-
         // create folder here
-
+        // find a free space in current directory which fits to lfns and msdos entries.
+        // then find a free cluster in FAT table. record that cluster's number to msdos
         cd(backupCurrDir,false);
     }
 }
 
 
 void touch(string& arg){
-    vector<string> path;
-    split(arg,path,'/');
-    string newFolder = path.back();
-    path.pop_back();
-    string backupCurrDir = CurrentDirectory;
-    string parentPath;
-    uint32_t workingCluster;
-    // construct parentPath
-
-    if(cd(parentPath,false)){
-        workingCluster = CurrentDirectoryFirstCluster;
-
-
-        // create folder here
-
-        cd(backupCurrDir,false);
-    }
+    mkdir(arg, false);
 }
 
 int main(){
@@ -493,7 +514,7 @@ int main(){
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    fd = open("../../example.img",O_RDONLY);
+    fd = open("../../../example.img",O_RDONLY);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
