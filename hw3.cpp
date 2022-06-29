@@ -1,5 +1,3 @@
-
-
 #include "fat32.h"
 #include <iostream>
 #include <string>
@@ -11,19 +9,9 @@
 #include <unistd.h>
 #include <ctime>
 
-#define convert(value) ((0x000000ff & value) << 24) | ((0x0000ff00 & value) << 8) | \
-                       ((0x00ff0000 & value) >> 8) | ((0xff000000 & value) >> 24)
-
 using namespace std;
 
-typedef struct Cluster{
-    vector<FatFileEntry> entries;
-} Cluster;
-
-void mv(vector<string>& args){
-    cout << "move directory" << endl;
-}
-
+// GLOBALS
 
 string CurrentDirectory = "/";
 uint32_t CurrentDirectoryFirstCluster; // root cluster at the beginning
@@ -42,6 +30,8 @@ uint32_t RootCluster;
 uint32_t EntriesPerCluster;
 uint32_t* FAT;
 int fd;
+
+// HELPER FUNCTIONS
 
 size_t split(const string &txt, vector<string> &strs, char ch)
 {
@@ -81,7 +71,6 @@ int parse(string command, vector<string>& args){
     else
         return 0;
 }
-
 
 uint32_t getFatEntry(uint32_t clusterNum){
     lseek(fd,ReservedSectorCount*BytesPerSector+clusterNum*4,SEEK_SET);
@@ -138,7 +127,6 @@ uint16_t setDate(){
 uint16_t setTime(){
     std::time_t t = std::time(0);   // get time now
     std::tm* now = std::localtime(&t);
-    cout << (now->tm_hour) << ":" << (now->tm_min) << endl;
     uint16_t time;
     time = time | (now->tm_hour);
     time = time << 11;
@@ -147,8 +135,6 @@ uint16_t setTime(){
     return time;
 }   
 
-
-
 uint8_t getSequence(FatFileLFN *lfn){
     uint8_t seq = lfn->sequence_number;
     seq = seq << 4;
@@ -156,43 +142,6 @@ uint8_t getSequence(FatFileLFN *lfn){
     return seq;
 }
 
-void print(FatFileEntry *entry){
-    if(entry->lfn.attributes == 15){
-        printf("Seq: %x\n",getSequence(&entry->lfn));
-        string name;
-        for(int i=0;i<13;i++){
-            if(i<5){
-                if(entry->lfn.name1[i] == 0)
-                    break;
-                char a = (char) entry->lfn.name1[i];
-                //name.insert(0,&a );
-                cout << (char) entry->lfn.name1[i];
-            }
-            else if(i<11){
-                if(entry->lfn.name2[i-5] == 0)
-                    break;
-                char a = (char) entry->lfn.name2[i-5];
-                //name.insert(0,&a );
-                cout << (char) entry->lfn.name2[i-5];
-            }
-            else{
-                if(entry->lfn.name3[i-11] == 0)
-                    break;
-                char a = (char) entry->lfn.name3[i-11];
-                //name.insert(0,&a );
-                cout << (char) entry->lfn.name3[i-11];
-            }
-        }
-        cout << endl;
-        //cout << name << endl;
-    }
-    else{
-        if(entry->msdos.filename[0] == 0)
-            return;
-        printf("%x\n",entry->msdos.filename[0]);
-    }
-    
-}
 void getName(FatFileLFN* lfn, string* name){
     for(int i=0;i<13;i++){
         if(i<5){
@@ -265,6 +214,26 @@ void updatePrompt(string& arg){
     }
 }
 
+unsigned char lfn_checksum(const unsigned char *pFCBName)
+{
+   int i;
+   unsigned char sum = 0;
+
+   for (i = 11; i; i--)
+      sum = ((sum & 1) << 7) + (sum >> 1) + *pFCBName++;
+
+   return sum;
+}
+
+void readFAT(uint32_t* FAT){
+    lseek(fd,ReservedSectorCount*BytesPerSector,SEEK_SET);
+    for(int f=0;f<(FATSize*BytesPerSector)/sizeof(uint32_t);f++){
+        uint32_t entry;
+        read(fd,&entry,sizeof(entry));
+        FAT[f] = entry;
+    }
+}
+
 bool locate(string& arg, uint32_t& foundCluster, FatFile83& foundEntry){
         //parse the path
     if(!arg.compare("/")){
@@ -300,7 +269,7 @@ bool locate(string& arg, uint32_t& foundCluster, FatFile83& foundEntry){
                 FatFileEntry firstEntry,secondEntry;
                 read(fd,&firstEntry,sizeof(FatFileEntry));
                 read(fd,&secondEntry,sizeof(FatFileEntry));
-                workingCluster = secondEntry.msdos.eaIndex | secondEntry.msdos.firstCluster;
+                workingCluster = (secondEntry.msdos.eaIndex << 16)| secondEntry.msdos.firstCluster;
                 if(workingCluster == 0)
                     workingCluster = RootCluster;
                 foundEntry = secondEntry.msdos;
@@ -341,15 +310,6 @@ bool locate(string& arg, uint32_t& foundCluster, FatFile83& foundEntry){
                     if(entry.msdos.filename[0] == 0){
                         return false;
                     }
-                    /* no need for attribute check here
-                    else if(entry.msdos.filename[0] == 0x2E || 
-                        (entry.msdos.filename[0] == 0x2E && entry.msdos.filename[1] == 0x2E) ||
-                        entry.msdos.filename[0] == 0x05 ||
-                        entry.msdos.filename[0] == 0xE5){
-                            names.clear();
-                            continue;
-                        }
-                    */
                     string fullName;
                     for(auto s:names){
                         fullName += s;
@@ -360,11 +320,11 @@ bool locate(string& arg, uint32_t& foundCluster, FatFile83& foundEntry){
                         //cout << fullName << " is found!" << endl;
                         if(f == size-1){
                             folderFound = true;
-                            workingCluster = (entry.msdos.eaIndex << 16) | entry.msdos.firstCluster; // should be fixed
+                            workingCluster = (entry.msdos.eaIndex << 16) | entry.msdos.firstCluster; 
                             foundEntry = entry.msdos;
                         }
                         else
-                            workingCluster = entry.msdos.eaIndex | entry.msdos.firstCluster;
+                            workingCluster = (entry.msdos.eaIndex << 16)| entry.msdos.firstCluster;
                         break;
                     }
                     else{// check the other files
@@ -396,8 +356,9 @@ bool locate(string& arg, uint32_t& foundCluster, FatFile83& foundEntry){
     return folderFound;
 }
 
+// COMMANDS
 
-bool cd(string& arg){
+void cd(string& arg){
     //parse the path
     uint32_t firstCluster;
     FatFile83 entry;
@@ -410,7 +371,6 @@ bool cd(string& arg){
             CurrentDirectoryFirstCluster = firstCluster;
             updatePrompt(arg);
         }
-
     }
 }
 
@@ -445,8 +405,6 @@ void ls(uint32_t& firstCluster, bool detail = false){
                     names.clear();
                     continue;
             }
-            
-                
             string fullName;
             for(auto s:names){
                 fullName += s;
@@ -457,7 +415,7 @@ void ls(uint32_t& firstCluster, bool detail = false){
             }
             else{ // ls -l
                 // may be one more cond here like if(names.size())???
-                if(entry.msdos.attributes == 0x10){
+                if(entry.msdos.attributes == 0x20){ // file
                     cout << "rwx------ 1 root root ";
                     uint32_t size = entry.msdos.fileSize; 
                     cout << size << " ";
@@ -467,7 +425,7 @@ void ls(uint32_t& firstCluster, bool detail = false){
                     cout << timestr << " ";
                     // <file_size_in_bytes> <last_modified_date_and_time> <filename> 
                 }
-                else if(entry.msdos.attributes == 0x20){
+                else if(entry.msdos.attributes == 0x10){ // folder
                     cout << "drwx------ 1 root root 0 ";
                     /*time_t date = (time_t) entry.msdos.modifiedDate; 
                     tm *datetm = localtime(&date);
@@ -512,12 +470,11 @@ void ls(string& arg,bool detail = false){
     }
 }
 
-// path->>> folder1/folder2/folder3 case1
-// path->>> /home/pictures/folde2 case2
-
 void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentcies, review
     // folder = true ---->>> mkdir
     // folder = false ---->>>> touch
+    // path->>> folder1/folder2/folder3 case1
+    // path->>> /home/pictures/folde2 case2
     vector<string> path;
     split(arg,path,'/');
     string newFolder;
@@ -527,41 +484,115 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
         // absolute
         newFolder = path.back();
         path.pop_back();
+        parentPath = "/";
         for(auto s:path){
             if(!s.compare(""))
-                parentPath+='/';
+                continue;
             else
-                parentPath+=s;
+                parentPath+=s+'/';
         }
+        parentPath.pop_back();
     }
     else{ //case1
         newFolder = path.back();
         path.pop_back();
+        int size = path.size();
         if(CurrentDirectory.size() == 1)
             parentPath=CurrentDirectory;
         else
-            parentPath = CurrentDirectory+ '/'; // should be fixed
-        for(auto s:path)
-            parentPath+=s;
+            parentPath = CurrentDirectory+ '/';
+        for(int f=0;f<size-1;f++)
+            parentPath+=path[f] + '/';
+        if(size) parentPath+=path.back();
     }
-    
+
     int length = newFolder.size();
     int numOfEntries;
     if(length>13)
         numOfEntries = (length / 13) + 2;
     else
         numOfEntries = 2; // one LFN and one base entry
+    vector<FatFileLFN> lfns;
+    int offset=0;
+    for(int l=1;l<numOfEntries;l++){
+        string lfnname = newFolder.substr(offset,offset+13);
+        offset+=13;
+        FatFileLFN lfn;
+        lfn.sequence_number = l;
+        int o = 0;
+        for(;o<lfnname.size();o++){
+            if(o<5){
+                lfn.name1[o] = lfnname[o];
+            }
+            else if(o<11){
+                lfn.name2[o-5] = lfnname[o];
+            }
+            else{
+                lfn.name3[o-11] = lfnname[o];
+            }
+        }
+        for(;o<13;o++){
+            if(o<5){
+                lfn.name1[o] = 0;
+            }
+            else if(o<11){
+                lfn.name2[o-5] = 0;
+            }
+            else{
+                lfn.name3[o-11] = 0;
+            }
+        }                
+        lfn.attributes = 0x0F;
+        lfn.reserved = 0x00;
+        // calculate the checksum
+        lfn.firstCluster = 0x0000;
+        lfns.push_back(lfn);
+    }
 
-    uint32_t firstCluster;
+    uint32_t firstCluster; // first cluster of parent folder
     uint32_t backup;
-    FatFile83 parentEntry; // entry of the current folder
+    FatFile83 parentEntry; // msdos entry of the parent folder
+
     if(!locate(parentPath,firstCluster,parentEntry))
         return;
     if(firstCluster != RootCluster && parentEntry.attributes == 0x20 || parentEntry.filename[0]== 0x05 || parentEntry.filename[0] == 0xE5) // parent folder is not root and parent folder is a file or deleted folder
         return;
     if(firstCluster == RootCluster){
+        parentEntry.filename[0] = '.';
+        parentEntry.filename[1] = '.';
+        parentEntry.filename[2] = ' ';
+        parentEntry.filename[3] = ' ';
+        parentEntry.filename[4] = ' ';
+        parentEntry.filename[5] = ' ';
+        parentEntry.filename[6] = ' ';
+        parentEntry.filename[7] = ' ';
+        parentEntry.extension[0] = ' ';
+        parentEntry.extension[1] = ' ';
+        parentEntry.extension[2] = ' ';
+        parentEntry.attributes = 0x10;
+        parentEntry.reserved = 0;
+        parentEntry.creationTimeMs = 0;
+        parentEntry.creationTime = 37014;
+        parentEntry.creationDate = 37014;
+        parentEntry.lastAccessTime = 21683;
         parentEntry.eaIndex = 0;
-        parentEntry.firstCluster = 2;
+        parentEntry.modifiedTime = 37014;
+        parentEntry.modifiedDate = 37014;
+        parentEntry.firstCluster = 0;
+        parentEntry.fileSize = 0;
+    }
+    else{
+        parentEntry.filename[0] = '.';
+        parentEntry.filename[1] = '.';
+        parentEntry.filename[2] = ' ';
+        parentEntry.filename[3] = ' ';
+        parentEntry.filename[4] = ' ';
+        parentEntry.filename[5] = ' ';
+        parentEntry.filename[6] = ' ';
+        parentEntry.filename[7] = ' ';
+        parentEntry.extension[0] = ' ';
+        parentEntry.extension[1] = ' ';
+        parentEntry.extension[2] = ' ';        
     }
     backup = firstCluster;
      // search the cluster, we need numOfEntries space
@@ -569,7 +600,7 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
     int filenum = 0;
     retrieveCluster(firstCluster); // lseek
     for(int e = 0;e<=EntriesPerCluster;e++){
-        if(e == EntriesPerCluster){
+        if(e == EntriesPerCluster){ // go to next cluster
             uint32_t fatEntry = FAT[firstCluster]; //getFatEntry(firstCluster);
             if(fatEntry>=0xffffff8){
                 // no next cluster
@@ -582,12 +613,9 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
                     }
                 }                
                 // update FAT for parent cluster
-                getFatEntry(firstCluster-1);
-                write(fd,&newParentCluster,sizeof(uint32_t));
+                FAT[firstCluster] = newParentCluster;
 
-                getFatEntry(newParentCluster-1);
-                uint32_t eoc = 0xffffff8;
-                write(fd,&eoc,sizeof(uint32_t));
+                FAT[newParentCluster] = 0xffffff8; // eoc
 
                 // find another cluster for the new folder
                 uint32_t newCluster;
@@ -596,106 +624,75 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
                         newCluster = e;
                         break;
                     }
-                }                   
+                } 
+
+                // update FAT in memory
+                FAT[newCluster] = 0xffffff8; //eoc
+
                 // write lfns and msdos
-                retrieveCluster(newCluster);
+                retrieveCluster(newParentCluster);
                 FatFile83 msdos;
                 msdos.filename[0] = '~';
-                msdos.filename[1] = filenum+1;
+                msdos.filename[1] = 48+filenum+1;
                 for(int i=2;i<8;i++)
-                    msdos.filename[i] = 0;
-                msdos.extension[0] = 0;
-                msdos.extension[1] = 0;
-                msdos.extension[2] = 0;
-                msdos.attributes = 0x10;
+                    msdos.filename[i] = ' ';
+                msdos.extension[0] = ' ';
+                msdos.extension[1] = ' ';
+                msdos.extension[2] = ' ';
+                if(folder) msdos.attributes = 0x10;
+                else msdos.attributes = 0x20;
                 msdos.creationTime = setTime();
                 msdos.creationTime = setDate();
                 msdos.modifiedTime = setTime();
                 msdos.modifiedDate = setDate();
                 msdos.firstCluster = 0x0000FFFF & newCluster;
-                msdos.eaIndex = (newCluster >> 16) & 0xFFFF;
+                msdos.eaIndex = (newCluster >> 16) & 0x0000FFFF;
                 msdos.fileSize = 0;
-                vector<FatFileLFN> lfns;
-                int offset=0;
-                for(int l=1;l<numOfEntries;l++){
-                    string lfnname = newFolder.substr(offset,offset+13);
-                    offset+=13;
-                    FatFileLFN lfn;
-                    lfn.sequence_number = l;
-                    int o = 0;
-                    for(;o<lfnname.size();o++){
-                        if(o<5){
-                            lfn.name1[o] = lfnname[o];
-                        }
-                        else if(o<11){
-                            lfn.name2[o-5] = lfnname[o];
-                        }
-                        else{
-                            lfn.name3[o-11] = lfnname[o];
-                        }
-                    }
-                    for(;o<13;o++){
-                        if(o<5){
-                            lfn.name1[o] = 0;
-                        }
-                        else if(o<11){
-                            lfn.name2[o-5] = 0;
-                        }
-                        else{
-                            lfn.name3[o-11] = 0;
-                        }
-                    }                
-                    lfn.attributes = 0x0F;
-                    lfn.reserved = 0x00;
-                    // calculate the checksum
-                    lfn.firstCluster = 0x0000;
-                    lfns.push_back(lfn);
-                }
                 // write lfns and msdos to parent directory's cluster
-                for(int i=lfns.size()-1;i>=0;i--)
+                for(int i=lfns.size()-1;i>=0;i--){
+                    lfns[i].checksum = lfn_checksum(msdos.filename);
                     write(fd,&(lfns[i]),sizeof(FatFileLFN));
+                }
                 write(fd,&msdos,sizeof(FatFile83));
-                
-                // update FAT for new folder
-                getFatEntry(newCluster-1);
 
-                write(fd,&eoc,sizeof(uint32_t));
-                
                 // prepare the new cluster
-                retrieveCluster(newCluster);
-                FatFile83 firstEntry;
-                FatFile83 secondEntry;
-                firstEntry.filename[0]='.';
-                for(int i=1;i<8;i++)
-                    firstEntry.filename[i]=' ';
-                for(int i=0;i<3;i++)
-                    firstEntry.extension[i]=' ';
-                firstEntry.attributes = 0x10;
-                firstEntry.reserved = msdos.reserved;
-                firstEntry.creationTime = msdos.creationTime;
-                firstEntry.creationDate = msdos.creationDate;
-                firstEntry.modifiedTime = msdos.modifiedTime;
-                firstEntry.modifiedDate = msdos.modifiedDate;
-                firstEntry.eaIndex = msdos.eaIndex;
-                firstEntry.firstCluster = msdos.firstCluster;
-                firstEntry.fileSize = 0;
+                if(folder){
+                    retrieveCluster(newCluster);
+                    FatFile83 firstEntry = msdos;
+                    FatFile83 secondEntry;
+                    firstEntry.filename[0]='.';
+                    for(int i=1;i<8;i++)
+                        firstEntry.filename[i]=' ';
+                    for(int i=0;i<3;i++)
+                        firstEntry.extension[i]=' ';
+                    /*firstEntry.attributes = 0x10;
+                    firstEntry.reserved = msdos.reserved;
+                    firstEntry.creationTime = msdos.creationTime;
+                    firstEntry.creationDate = msdos.creationDate;
+                    firstEntry.modifiedTime = msdos.modifiedTime;
+                    firstEntry.modifiedDate = msdos.modifiedDate;
+                    firstEntry.eaIndex = msdos.eaIndex;
+                    firstEntry.firstCluster = msdos.firstCluster;
+                    firstEntry.fileSize = 0;*/
 
-                secondEntry = parentEntry;
-                secondEntry.filename[0]='.';
-                secondEntry.filename[1]='.';
-                for(int i=2;i<8;i++)
-                    secondEntry.filename[i]=' ';
-                for(int i=0;i<3;i++)
-                    secondEntry.extension[i]=' ';
-                secondEntry.attributes = 0x10;
-                //secondEntry.reserved = parentEntry.reserved;
-                secondEntry.eaIndex = (backup >> 16) & 0xFFFF;
-                secondEntry.firstCluster = 0x0000FFFF & backup;
-                secondEntry.fileSize = 0;            
-                write(fd,&firstEntry,sizeof(FatFile83));
-                write(fd,&secondEntry,sizeof(FatFile83));
+                    /*secondEntry = parentEntry;
+                    secondEntry.filename[0]='.';
+                    secondEntry.filename[1]='.';
+                    for(int i=2;i<8;i++)
+                        secondEntry.filename[i]=' ';
+                    for(int i=0;i<3;i++)
+                        secondEntry.extension[i]=' ';
+                    secondEntry.attributes = 0x10;
+                    //secondEntry.reserved = parentEntry.reserved;
+                    secondEntry.firstCluster = 0x0000FFFF & backup;
+                    secondEntry.eaIndex = (backup >> 16) & 0xFFFF;
+                    secondEntry.fileSize = 0;            
+                    write(fd,&firstEntry,sizeof(FatFile83));
+                    write(fd,&secondEntry,sizeof(FatFile83));*/
+                    write(fd,&firstEntry,sizeof(FatFile83));
+                    write(fd,&parentEntry,sizeof(FatFile83));                    
+                }
                 return;
-                // update FAT
             }
             firstCluster = fatEntry;
             retrieveCluster(firstCluster);
@@ -704,16 +701,16 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
         }
         FatFileEntry entry;
         read(fd,&entry,sizeof(FatFileEntry));
-        if(entry.msdos.filename[0] == 0x2E)
+        if(entry.msdos.filename[0] == 0x2E) // . & ..
             continue;
-        if(entry.msdos.attributes == 0x10 || entry.msdos.attributes == 0x20 )
+        if(entry.msdos.attributes == 0x10 || entry.msdos.attributes == 0x20)
             filenum++;
         if(entry.msdos.filename[0] == 0x00 || entry.msdos.filename[0] == 0x05 || entry.msdos.filename[0] == 0xE5) // find available entries
             space++;
         else
             space = 0;
-        if(space == numOfEntries){
-            // found enough space
+        if(space == numOfEntries){// found enough space
+            
             // allocate new cluster
             uint32_t newCluster;
             for(uint32_t e=0;e<(FATSize*BytesPerSector)/sizeof(uint32_t);e++){
@@ -723,104 +720,73 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
                 }
             }
 
+            // update FAT in memory
+            FAT[newCluster] = 0xffffff8; // eoc
+
             lseek(fd,(-numOfEntries)*sizeof(FatFileEntry),SEEK_CUR);
-            FatFile83 msdos;
+            FatFile83 msdos; // create base entry
             msdos.filename[0] = '~';
-            msdos.filename[1] = filenum+1;
+            msdos.filename[1] = 48+filenum+1;
             for(int i=2;i<8;i++)
-                msdos.filename[i] = 0;
-            msdos.extension[0] = 0;
-            msdos.extension[1] = 0;
-            msdos.extension[2] = 0;
-            msdos.attributes = 0x10;
+                msdos.filename[i] = ' ';
+            msdos.extension[0] = ' ';
+            msdos.extension[1] = ' ';
+            msdos.extension[2] = ' ';
+            if(folder) msdos.attributes = 0x10;
+            else msdos.attributes = 0x20;
             msdos.creationTime = setTime();
             msdos.creationTime = setDate();
             msdos.modifiedTime = setTime();
             msdos.modifiedDate = setDate();
             msdos.firstCluster = 0x0000FFFF & newCluster;
-            msdos.eaIndex = (newCluster >> 4) & 0xFFFF;
+            msdos.eaIndex = (newCluster >> 16) & 0xFFFF;
             msdos.fileSize = 0;
-            vector<FatFileLFN> lfns;
-            int offset=0;
-            for(int l=1;l<numOfEntries;l++){
-                string lfnname = newFolder.substr(offset,offset+13);
-                offset+=13;
-                FatFileLFN lfn;
-                lfn.sequence_number = l;
-                int o = 0;
-                for(;o<lfnname.size();o++){
-                    if(o<5){
-                        lfn.name1[o] = lfnname[o];
-                    }
-                    else if(o<11){
-                        lfn.name2[o-5] = lfnname[o];
-                    }
-                    else{
-                        lfn.name3[o-11] = lfnname[o];
-                    }
-                }
-                for(;o<13;o++){
-                    if(o<5){
-                        lfn.name1[o] = 0;
-                    }
-                    else if(o<11){
-                        lfn.name2[o-5] = 0;
-                    }
-                    else{
-                        lfn.name3[o-11] = 0;
-                    }
-                }                
-                lfn.attributes = 0x0F;
-                lfn.reserved = 0x00;
-                // calculate the checksum
-                lfn.firstCluster = 0x0000;
-                lfns.push_back(lfn);
-            }
             // write lfns and msdos to parent directory's cluster
-            for(int i=lfns.size()-1;i>=0;i--)
+            for(int i=lfns.size()-1;i>=0;i--){
+                lfns[i].checksum = lfn_checksum(msdos.filename);
                 write(fd,&(lfns[i]),sizeof(FatFileLFN));
+            }
+                
             write(fd,&msdos,sizeof(FatFile83));            
 
-            // update FAT for new folder
-            getFatEntry(newCluster-1);
-            uint32_t eoc = 0xffffff8;
-            write(fd,&eoc,sizeof(uint32_t));
-            
-            // prepare the new cluster
-            retrieveCluster(newCluster);
-            FatFile83 firstEntry;
-            FatFile83 secondEntry;
-            firstEntry.filename[0]='.';
-            for(int i=1;i<8;i++)
-                firstEntry.filename[i]=' ';
-            for(int i=0;i<3;i++)
-                firstEntry.extension[i]=' ';
-            firstEntry.attributes = 0x10;
-            firstEntry.reserved = msdos.reserved;
-            firstEntry.creationTime = msdos.creationTime;
-            firstEntry.creationDate = msdos.creationDate;
-            firstEntry.modifiedTime = msdos.modifiedTime;
-            firstEntry.modifiedDate = msdos.modifiedDate;
-            firstEntry.eaIndex = msdos.eaIndex;
-            firstEntry.firstCluster = msdos.firstCluster;
-            firstEntry.fileSize = 0;
+            // prepare the new cluster for newly created folder
+            if(folder){
+                retrieveCluster(newCluster);
+                FatFile83 firstEntry = msdos;
+                FatFile83 secondEntry;
+                firstEntry.filename[0]='.';
+                for(int i=1;i<8;i++)
+                    firstEntry.filename[i]=' ';
+                for(int i=0;i<3;i++)
+                    firstEntry.extension[i]=' ';
+                /*firstEntry.attributes = 0x10;
+                firstEntry.reserved = msdos.reserved;
+                firstEntry.creationTime = msdos.creationTime;
+                firstEntry.creationDate = msdos.creationDate;
+                firstEntry.modifiedTime = msdos.modifiedTime;
+                firstEntry.modifiedDate = msdos.modifiedDate;
+                firstEntry.eaIndex = msdos.eaIndex;
+                firstEntry.firstCluster = msdos.firstCluster;
+                firstEntry.fileSize = 0;*/
 
-            secondEntry = parentEntry;
-            secondEntry.filename[0]='.';
-            secondEntry.filename[1]='.';
-            for(int i=2;i<8;i++)
-                secondEntry.filename[i]=' ';
-            for(int i=0;i<3;i++)
-                secondEntry.extension[i]=' ';
-            secondEntry.attributes = 0x10;
-            //secondEntry.reserved = parentEntry.reserved;
-            secondEntry.eaIndex = (backup >> 16) & 0xFFFF;
-            secondEntry.firstCluster = 0x0000FFFF & backup;
-            secondEntry.fileSize = 0;            
-            write(fd,&firstEntry,sizeof(FatFile83));
-            write(fd,&secondEntry,sizeof(FatFile83));
+                /*secondEntry = parentEntry;
+                secondEntry.filename[0]='.';
+                secondEntry.filename[1]='.';
+                for(int i=2;i<8;i++)
+                    secondEntry.filename[i]=' ';
+                for(int i=0;i<3;i++)
+                    secondEntry.extension[i]=' ';
+                secondEntry.attributes = 0x10;
+                //secondEntry.reserved = parentEntry.reserved;
+                secondEntry.firstCluster = 0x0000FFFF & backup;
+                secondEntry.eaIndex = (backup >> 16) & 0xFFFF;
+                secondEntry.fileSize = 0;            
+                write(fd,&firstEntry,sizeof(FatFile83));
+                write(fd,&secondEntry,sizeof(FatFile83));*/
+                write(fd,&firstEntry,sizeof(FatFile83));
+                write(fd,&parentEntry,sizeof(FatFile83));
+            }
             return;
-
         }
     }
 
@@ -846,7 +812,7 @@ void cat(string& arg){
     while(ch != 0){
         if(r==(EntriesPerCluster*sizeof(FatFileEntry))){
             // go other cluster
-            uint32_t fatEntry = getFatEntry(firstCluster);
+            uint32_t fatEntry = FAT[firstCluster]; //getFatEntry(firstCluster);
             if(fatEntry >= 0xFFFFFF8){
                 break;
             }
@@ -862,14 +828,190 @@ void cat(string& arg){
     cout << endl;
 }
 
-void readFAT(uint32_t* FAT){
-    lseek(fd,ReservedSectorCount*BytesPerSector,SEEK_SET);
-    for(int f=0;f<(FATSize*BytesPerSector)/sizeof(uint32_t);f++){
-        uint32_t entry;
-        read(fd,&entry,sizeof(entry));
-        FAT[f] = entry;
+void mv(string& src, string& dest){
+    uint32_t firstCluster;
+    uint32_t destFirstCluster;
+    FatFile83 msdos; // file83 entry of original file or folder
+    FatFile83 destMsdos; // file83 entry of original file or folder
+    if(!locate(src,firstCluster,msdos) || !locate(dest,destFirstCluster,destMsdos))
+        return;
+    vector<string> path;
+    split(src,path,'/');
+    string original;
+    string parentPath;
+    // construct parent path in parentPath
+    if(!path[0].compare("")){ //case2
+        // absolute
+        original = path.back();
+        path.pop_back();
+        parentPath = "/";
+        for(auto s:path){
+            if(!s.compare(""))
+                continue;
+            else
+                parentPath+=s+'/';
+        }
+        parentPath.pop_back();
     }
+    else{ //case1
+        original = path.back();
+        path.pop_back();
+        int size = path.size();
+        if(CurrentDirectory.size() == 1)
+            parentPath=CurrentDirectory;
+        else
+            parentPath = CurrentDirectory+ '/';
+        for(int f=0;f<size-1;f++)
+            parentPath+=path[f] + '/';
+        if(size) parentPath+=path.back();
+    }
+    locate(parentPath,firstCluster,msdos);
+    uint32_t workingCluster = firstCluster;
+    int e = 0; // represent how many entry is read in a cluster
+    vector<string> names;
+    vector<FatFileEntry> originalEntries;
+    FatFileEntry entry;
+    retrieveCluster(workingCluster);
+    while(1){
+        if(e==EntriesPerCluster){
+            e=0;
+            uint32_t fatEntry = FAT[workingCluster];//getFatEntry(workingCluster);
+            // find next cluster from fatEntry, if there is, update; else, return;
+            if(fatEntry >= 0xffffff8)
+                return;
+            workingCluster = fatEntry;// update workingCluster
+            retrieveCluster(workingCluster);
+        }
+        e++;               
+        string name;
+        read(fd,&entry,sizeof(entry));
+        originalEntries.push_back(entry);
+        if(entry.lfn.attributes != 0x0F){
+            if(entry.msdos.filename[0] == 0){
+                return;
+            }
+            string fullName;
+            for(auto s:names){
+                fullName += s;
+            }
+            //cout << fullName << endl;
+            if(!fullName.compare(original)){ //&& entry.msdos.attributes == 0x10){// folder found
+                //cout << fullName << " is found!" << endl;
+                lseek(fd,-1*(sizeof(FatFileEntry)),SEEK_CUR);// mark as deleted
+                uint8_t deleted = 0xE5;
+                write(fd,&deleted,sizeof(uint8_t));
+                break;
+            }
+            else{// check the other files
+                names.clear();
+                originalEntries.clear();
+                continue;
+            }
+        }
+        else{
+            getName(&entry.lfn,&name);
+            names.insert(names.begin(),name);
+        }
+    }
+    // we have original entries here
+    workingCluster = destFirstCluster;
+    int numOfEntries = originalEntries.size();
+    int space = 0;
+    int filenum = 0;    
+    retrieveCluster(workingCluster);
+    for(int e = 0;e<=EntriesPerCluster;e++){
+        if(e == EntriesPerCluster){ // go to next cluster
+            uint32_t fatEntry = FAT[firstCluster]; //getFatEntry(firstCluster);
+            if(fatEntry>=0xffffff8){
+                // no next cluster
+                // allocate new cluster for parent
+                uint32_t newParentCluster;
+                for(uint32_t e=0;e<(FATSize*BytesPerSector)/sizeof(uint32_t);e++){
+                    if(FAT[e] == 0x0000000){
+                        newParentCluster = e;
+                        break;
+                    }
+                }                
+                // update FAT for parent cluster
+                FAT[firstCluster] = newParentCluster;
+
+                FAT[newParentCluster] = 0xffffff8; // eoc
+
+                // write lfns and msdos
+                retrieveCluster(newParentCluster);
+                FatFileEntry& originalMsdos = originalEntries.back(); // create base entry
+
+                // write lfns and msdos to parent directory's cluster
+                for(int i=0;i<numOfEntries-1;i++){
+                    originalEntries[i].lfn.checksum = lfn_checksum(originalMsdos.msdos.filename);
+                    write(fd,&(originalEntries[i]),sizeof(FatFileEntry));
+                } 
+                write(fd,&originalEntries.back().msdos,sizeof(FatFile83));            
+
+                // prepare the cluster for new parent folder
+                if(originalEntries.back().msdos.attributes == 0x10){ // folder
+                    workingCluster =  (originalEntries.back().msdos.eaIndex << 16) | originalEntries.back().msdos.firstCluster;
+                    retrieveCluster(workingCluster);
+                    FatFileEntry firstEntry,secondEntry;
+                    read(fd,&firstEntry,sizeof(FatFileEntry));
+                    read(fd,&secondEntry,sizeof(FatFileEntry));
+
+                    secondEntry.msdos.firstCluster = 0x0000FFFF & destFirstCluster;
+                    secondEntry.msdos.eaIndex = (destFirstCluster >> 16) & 0xFFFF;
+            
+                    lseek(fd,-1*sizeof(FatFileEntry),SEEK_CUR);
+                    write(fd,&secondEntry,sizeof(FatFile83));
+                }
+                return;
+            }
+            workingCluster = fatEntry;
+            retrieveCluster(workingCluster);
+            e=0;
+            continue;
+        }
+        FatFileEntry entry;
+        read(fd,&entry,sizeof(FatFileEntry));
+        if(entry.msdos.filename[0] == 0x2E) // . & ..
+            continue;
+        if(entry.msdos.attributes == 0x10 || entry.msdos.attributes == 0x20)
+            filenum++;
+        if(entry.msdos.filename[0] == 0x00 || entry.msdos.filename[0] == 0x05 || entry.msdos.filename[0] == 0xE5) // find available entries
+            space++;
+        else
+            space = 0;
+        if(space == numOfEntries){// found enough space
+            
+            // allocate new cluster
+
+            lseek(fd,(-numOfEntries)*sizeof(FatFileEntry),SEEK_CUR);
+            FatFileEntry& originalMsdos = originalEntries.back(); // create base entry
+
+            // write lfns and msdos to parent directory's cluster
+            for(int i=0;i<numOfEntries-1;i++){
+                originalEntries[i].lfn.checksum = lfn_checksum(originalMsdos.msdos.filename);
+                write(fd,&(originalEntries[i]),sizeof(FatFileEntry));
+            } 
+            write(fd,&originalMsdos.msdos,sizeof(FatFile83));            
+
+            // prepare the cluster for new parent folder
+            if(originalMsdos.msdos.attributes == 0x10){ // folder
+                workingCluster =  (originalMsdos.msdos.eaIndex << 16) | originalMsdos.msdos.firstCluster;
+                retrieveCluster(workingCluster);
+                FatFileEntry firstEntry,secondEntry;
+                read(fd,&firstEntry,sizeof(FatFileEntry));
+                read(fd,&secondEntry,sizeof(FatFileEntry));
+
+                secondEntry.msdos.firstCluster = 0x0000FFFF & destFirstCluster;
+                secondEntry.msdos.eaIndex = (destFirstCluster >> 16) & 0xFFFF;
+          
+                lseek(fd,-1*sizeof(FatFileEntry),SEEK_CUR);
+                write(fd,&secondEntry,sizeof(FatFile83));
+            }
+            return;
+        }
+    }    
 }
+
 
 int main(){
     string command;
@@ -929,13 +1071,16 @@ int main(){
             touch(args[1]);
             break;
         case 5: // mv
-            mv(args);
+            mv(args[1],args[2]);
             break;
         case 6: // cat
             cat(args[1]);
             break;
         }
     }
+    getFatEntry(0);
+    for(uint32_t e=0;e<(FATSize*BytesPerSector)/sizeof(uint32_t);e++)
+        write(fd,&FAT[e],sizeof(uint32_t));
     close(fd);
     return 0;
 }
