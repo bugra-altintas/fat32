@@ -518,7 +518,9 @@ void mkdir(string& arg, bool folder = true){ // there are lots of inconsistentci
         string lfnname = newFolder.substr(offset,offset+13);
         offset+=13;
         FatFileLFN lfn;
+        
         lfn.sequence_number = l;
+        if(l == numOfEntries -1) lfn.sequence_number |= 0x40;
         int o = 0;
         for(;o<lfnname.size();o++){
             if(o<5){
@@ -1038,6 +1040,7 @@ int main(){
     CurrentDirectoryFirstCluster = RootCluster;
     FAT = new uint32_t[(FATSize*BytesPerSector)/4];
     readFAT(FAT);
+    cout << FAT[1014] << endl;
     while(1){
         cout << CurrentDirectory + "> ";
         getline(cin,command);
@@ -1078,7 +1081,7 @@ int main(){
             break;
         }
     }
-    getFatEntry(0);
+    lseek(fd,ReservedSectorCount*BytesPerSector,SEEK_SET);
     for(uint32_t e=0;e<(FATSize*BytesPerSector)/sizeof(uint32_t);e++)
         write(fd,&FAT[e],sizeof(uint32_t));
     close(fd);
