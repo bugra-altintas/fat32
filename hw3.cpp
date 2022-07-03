@@ -88,7 +88,7 @@ off_t retrieveCluster(uint32_t workingCluster){
     return pos;
 }
 
-string getDate(uint16_t date){
+string getDate(uint16_t date){ 
     string months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     uint8_t day = (0x001F & date);
     date = date >> 5;
@@ -100,12 +100,12 @@ string getDate(uint16_t date){
         str = " - ";
         return str;
     }
-    str = months[month-1];
+    str = months[month];
     str += " ";
     str += to_string(day);
     return str;
 }
-string getTime(uint16_t time){
+string getTime(uint16_t time){ // 15-11 hours 1111 1000 0000 0000   , 10-5 minutes 1111 1000 000 0000
     uint8_t sec = (0x001F & time);
     time = time >> 5;
     uint8_t min = (0x003F & time);
@@ -121,7 +121,7 @@ uint16_t setDate(){
     uint16_t date;
     date = date | (now->tm_year-80);
     date = date << 9;
-    date = date | ((now->tm_mon+1) << 5);
+    date = date | ((now->tm_mon) << 5);
     date = date | (now->tm_mday);
     return date;
 } 
@@ -1059,13 +1059,13 @@ void mv(string& src, string& dest){
 }
 
 
-int main(){
+int main(int argc, char* argv[]){
     string command;
     BPB_struct bpb;
     void* img;
     //FILE *fp = fopen("../../../example.img","w+");
     //if(fp == NULL) cout << "image does not open" << endl;
-    fd = open("../../example.img",O_RDWR);
+    fd = open(argv[1],O_RDWR);
     if(fd == -1) cout << "image does not open" << endl;
 
     img = mmap(NULL,512,PROT_READ,MAP_SHARED,fd,0);
@@ -1083,7 +1083,6 @@ int main(){
     CurrentDirectoryFirstCluster = RootCluster;
     FAT = new uint32_t[(FATSize*BytesPerSector)/4];
     readFAT(FAT);
-    cout << FAT[1015] << endl;
     while(1){
         cout << CurrentDirectory + "> ";
         getline(cin,command);
